@@ -45,21 +45,24 @@ const extensionType = yup
  * Schema for `Extension` objects.
  */
 const extension = yup
-  .object({
+  .object()
+  .required()
+  .shape({
     type: extensionType,
     properties: yup.object().required(),
   })
-  .required();
+  .noUnknown(false);
 
 /**
  * Schema for `PluginManifest` objects.
  */
 export const pluginManifest = yup
-  .object({
+  .object()
+  .required()
+  .shape({
     name: pluginName,
     version: semverString,
     extensions: yup.array().of(extension).required(),
-  })
-  .required();
+  });
 
 export { pluginManifest as pluginManifestSchema };
