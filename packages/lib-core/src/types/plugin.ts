@@ -40,6 +40,10 @@ export type PluginRuntimeMetadata = {
  *
  * The `baseURL` should be used when loading all plugin assets, including the ones listed in
  * `loadScripts`.
+ *
+ * This is the standard (webpack) representation of a plugin manifest, where we need to load
+ * the specified scripts in order to initialize the plugin and access its exposed modules via
+ * the plugin's entry module.
  */
 export type PluginManifest = PluginRuntimeMetadata & {
   baseURL: string;
@@ -50,19 +54,33 @@ export type PluginManifest = PluginRuntimeMetadata & {
 };
 
 /**
+ * Plugin manifest object, created directly in your application.
+ *
+ * This is the local (manual) representation of a plugin manifest; any code references in
+ * the `extensions` list should be represented as `CodeRef` functions. Plugins defined this
+ * way will have no entry module.
+ */
+export type LocalPluginManifest = PluginRuntimeMetadata & {
+  extensions: Extension[];
+  $local: true;
+};
+
+export type AnyPluginManifest = PluginManifest | LocalPluginManifest;
+
+/**
  * Internal entry on a plugin in `pending` state.
  */
 export type PendingPlugin = {
-  manifest: Readonly<PluginManifest>;
+  manifest: Readonly<AnyPluginManifest>;
 };
 
 /**
  * Internal entry on a plugin in `loaded` state.
  */
 export type LoadedPlugin = {
-  manifest: Readonly<PluginManifest>;
+  manifest: Readonly<AnyPluginManifest>;
   loadedExtensions: Readonly<LoadedExtension[]>;
-  entryModule: PluginEntryModule;
+  entryModule?: PluginEntryModule;
   enabled: boolean;
   disableReason?: string;
 };
@@ -71,7 +89,7 @@ export type LoadedPlugin = {
  * Internal entry on a plugin in `failed` state.
  */
 export type FailedPlugin = {
-  manifest: Readonly<PluginManifest>;
+  manifest: Readonly<AnyPluginManifest>;
   errorMessage: string;
   errorCause?: unknown;
 };

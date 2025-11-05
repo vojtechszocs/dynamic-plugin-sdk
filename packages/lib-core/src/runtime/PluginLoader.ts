@@ -7,7 +7,7 @@ import { DEFAULT_REMOTE_ENTRY_CALLBACK } from '../constants';
 import type { LoadedExtension } from '../types/extension';
 import type { ResourceFetch } from '../types/fetch';
 import type { PluginLoadResult, PluginLoaderInterface } from '../types/loader';
-import type { PluginManifest } from '../types/plugin';
+import type { PluginManifest, AnyPluginManifest } from '../types/plugin';
 import type { PluginEntryModule, PluginEntryCallback } from '../types/runtime';
 import { basicFetch } from '../utils/basic-fetch';
 import { settleAllPromises } from '../utils/promise';
@@ -15,6 +15,7 @@ import { injectScriptElement, getScriptElement } from '../utils/scripts';
 import { resolveURL } from '../utils/url';
 import { pluginManifestSchema } from '../yup-schemas';
 import { decodeCodeRefs } from './coderefs';
+import { isStandardPluginManifest } from './plugin-manifest';
 
 declare global {
   interface Window {
@@ -24,7 +25,7 @@ declare global {
 
 type PluginLoadData = {
   status: 'pending' | 'loaded' | 'failed';
-  manifest: PluginManifest;
+  manifest: AnyPluginManifest;
   entryCallbackFired?: boolean;
   entryCallbackModule?: PluginEntryModule;
 };
@@ -46,7 +47,7 @@ export type PluginLoaderOptions = Partial<{
    *
    * By default, all plugins are allowed to be loaded and reloaded.
    */
-  canLoadPlugin: (manifest: PluginManifest, reload: boolean) => boolean;
+  canLoadPlugin: (manifest: AnyPluginManifest, reload: boolean) => boolean;
 
   /**
    * Control whether the given plugin script can be reloaded when attempting to reload
@@ -121,7 +122,7 @@ export type PluginLoaderOptions = Partial<{
    *
    * By default, no transformation is performed on the manifest.
    */
-  transformPluginManifest: (manifest: PluginManifest) => PluginManifest;
+  transformPluginManifest: <T extends AnyPluginManifest>(manifest: T) => T;
 
   /**
    * Provide access to the plugin's entry module.
@@ -174,10 +175,10 @@ export class PluginLoader implements PluginLoaderInterface {
 
     pluginManifestSchema.validateSync(manifest, { strict: true, abortEarly: false });
 
-    return manifest;
+    return manifest as PluginManifest;
   }
 
-  transformPluginManifest(manifest: PluginManifest) {
+  transformPluginManifest<T extends AnyPluginManifest>(manifest: T) {
     return this.options.transformPluginManifest(manifest);
   }
 
@@ -191,15 +192,17 @@ export class PluginLoader implements PluginLoaderInterface {
    * For plugins using the `custom` registration method, the `getPluginEntryModule` function
    * is expected to return the entry module of the given plugin. If not implemented properly,
    * plugins using the `custom` registration method will fail to load.
+   *
+   * For plugins loaded from a local plugin manifest, the `entryModule` will be `undefined`.
    */
-  async loadPlugin(manifest: PluginManifest): Promise<PluginLoadResult> {
+  async loadPlugin(manifest: AnyPluginManifest): Promise<PluginLoadResult> {
     const pluginName = manifest.name;
     const reload = this.plugins.has(pluginName);
 
     const data: PluginLoadData = { status: 'pending', manifest };
-    let entryModule: PluginEntryModule;
+    let entryModule: PluginEntryModule | undefined;
 
-    if (manifest.registrationMethod === 'callback') {
+    if (isStandardPluginManifest(manifest) && manifest.registrationMethod === 'callback') {
       data.entryCallbackFired = false;
     }
 
@@ -229,7 +232,9 @@ export class PluginLoader implements PluginLoaderInterface {
     }
 
     try {
-      await this.loadPluginScripts(manifest, data);
+      if (isStandardPluginManifest(manifest)) {
+        await this.loadPluginScripts(manifest, data);
+      }
     } catch (e) {
       data.status = 'failed';
       this.invokeLoadListeners();
@@ -242,7 +247,9 @@ export class PluginLoader implements PluginLoaderInterface {
     }
 
     try {
-      entryModule = await this.initSharedModules(manifest, data);
+      if (isStandardPluginManifest(manifest)) {
+        entryModule = await this.initSharedModules(manifest, data);
+      }
     } catch (e) {
       data.status = 'failed';
       this.invokeLoadListeners();
@@ -254,21 +261,25 @@ export class PluginLoader implements PluginLoaderInterface {
       };
     }
 
-    const loadedExtensions = cloneDeep(manifest.extensions).map<LoadedExtension>((e, index) =>
-      decodeCodeRefs(
-        {
-          ...e,
-          pluginName,
-          uid: `${pluginName}[${index}]_${manifest.buildHash ?? uuidv4()}`,
-        },
-        entryModule,
-      ),
-    );
+    const pluginBuildHash = isStandardPluginManifest(manifest)
+      ? manifest.buildHash ?? uuidv4()
+      : uuidv4();
+
+    let loadedExtensions = cloneDeep(manifest.extensions).map<LoadedExtension>((e, index) => ({
+      ...e,
+      pluginName,
+      uid: `${pluginName}[${index}]_${pluginBuildHash}`,
+    }));
+
+    if (isStandardPluginManifest(manifest)) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      loadedExtensions = loadedExtensions.map((e) => decodeCodeRefs(e, entryModule!));
+    }
 
     data.status = 'loaded';
     this.invokeLoadListeners();
 
-    return { success: true, entryModule, loadedExtensions };
+    return { success: true, loadedExtensions, entryModule };
   }
 
   /**
@@ -361,7 +372,7 @@ export class PluginLoader implements PluginLoaderInterface {
    *
    * Fail early if there are any unsuccessful or unmet dependency resolutions.
    */
-  private resolvePluginDependencies(manifest: PluginManifest) {
+  private resolvePluginDependencies(manifest: AnyPluginManifest) {
     return new Promise<void>((resolve, reject) => {
       const pluginName = manifest.name;
       const requiredDependencies = manifest.dependencies ?? {};
@@ -458,7 +469,6 @@ export class PluginLoader implements PluginLoaderInterface {
     const callbackName = this.options.entryCallbackSettings.name ?? DEFAULT_REMOTE_ENTRY_CALLBACK;
 
     if (!registerCallback) {
-      consoleLogger.info(`Plugin entry callback ${callbackName} will not be registered`);
       return;
     }
 
@@ -468,5 +478,7 @@ export class PluginLoader implements PluginLoaderInterface {
     }
 
     window[callbackName] = this.createPluginEntryCallback();
+
+    consoleLogger.info(`Plugin entry callback ${callbackName} has been registered`);
   }
 }

@@ -4,7 +4,7 @@ import { compact, isEqual, noop, pickBy } from 'lodash';
 import { version as sdkVersion } from '../../package.json';
 import type { LoadedExtension } from '../types/extension';
 import type { PluginLoaderInterface } from '../types/loader';
-import type { PluginManifest, PendingPlugin, LoadedPlugin, FailedPlugin } from '../types/plugin';
+import type { AnyPluginManifest, PendingPlugin, LoadedPlugin, FailedPlugin } from '../types/plugin';
 import type { PluginEntryModule } from '../types/runtime';
 import type { PluginInfoEntry, PluginStoreInterface, FeatureFlags } from '../types/store';
 import { PluginEventType } from '../types/store';
@@ -160,12 +160,15 @@ export class PluginStore implements PluginStoreInterface {
     }
   }
 
-  async loadPlugin(manifest: PluginManifest | string, forceReload?: boolean) {
-    let loadedManifest: PluginManifest;
+  async loadPlugin(manifest: AnyPluginManifest | string, forceReload?: boolean) {
+    let loadedManifest: AnyPluginManifest;
 
     try {
-      loadedManifest =
-        typeof manifest === 'string' ? await this.loader.loadPluginManifest(manifest) : manifest;
+      if (typeof manifest === 'string') {
+        loadedManifest = await this.loader.loadPluginManifest(manifest);
+      } else {
+        loadedManifest = manifest;
+      }
     } catch (e) {
       throw new ErrorWithCause('Failed to load plugin manifest', e);
     }
@@ -190,9 +193,9 @@ export class PluginStore implements PluginStoreInterface {
       const result = await this.loader.loadPlugin(loadedManifest);
 
       if (result.success) {
-        const { entryModule, loadedExtensions } = result;
+        const { loadedExtensions, entryModule } = result;
 
-        this.addLoadedPlugin(loadedManifest, entryModule, loadedExtensions);
+        this.addLoadedPlugin(loadedManifest, loadedExtensions, entryModule);
 
         consoleLogger.info(`Plugin ${pluginName} has been loaded`);
 
@@ -288,10 +291,11 @@ export class PluginStore implements PluginStoreInterface {
     }
   }
 
-  protected addPendingPlugin(manifest: PluginManifest) {
+  protected addPendingPlugin(manifest: AnyPluginManifest) {
     const pluginName = manifest.name;
+    const pendingPlugin: PendingPlugin = { manifest };
 
-    this.pendingPlugins.set(pluginName, { manifest });
+    this.pendingPlugins.set(pluginName, pendingPlugin);
     this.loadedPlugins.delete(pluginName);
     this.failedPlugins.delete(pluginName);
 
@@ -300,14 +304,14 @@ export class PluginStore implements PluginStoreInterface {
   }
 
   /**
-   * Add a loaded plugin to the {@link PluginStore}.
+   * @remarks
    *
    * Once added, the plugin is disabled by default. Enable it to put its extensions into use.
    */
   protected addLoadedPlugin(
-    manifest: PluginManifest,
-    entryModule: PluginEntryModule,
+    manifest: AnyPluginManifest,
     loadedExtensions: LoadedExtension[],
+    entryModule?: PluginEntryModule,
   ) {
     const pluginName = manifest.name;
 
@@ -327,12 +331,17 @@ export class PluginStore implements PluginStoreInterface {
     this.updateExtensions();
   }
 
-  protected addFailedPlugin(manifest: PluginManifest, errorMessage: string, errorCause?: unknown) {
+  protected addFailedPlugin(
+    manifest: AnyPluginManifest,
+    errorMessage: string,
+    errorCause?: unknown,
+  ) {
     const pluginName = manifest.name;
+    const failedPlugin: FailedPlugin = { manifest, errorMessage, errorCause };
 
     this.pendingPlugins.delete(pluginName);
     this.loadedPlugins.delete(pluginName);
-    this.failedPlugins.set(pluginName, { manifest, errorMessage, errorCause });
+    this.failedPlugins.set(pluginName, failedPlugin);
 
     this.invokeListeners(PluginEventType.PluginInfoChanged);
     this.updateExtensions();
@@ -347,6 +356,12 @@ export class PluginStore implements PluginStoreInterface {
 
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const plugin = this.loadedPlugins.get(pluginName)!;
+
+    if (!plugin.entryModule) {
+      throw new Error(
+        `Attempt to get module '${moduleName}' of plugin ${pluginName} which has no entry module`,
+      );
+    }
 
     const referencedModule = await getPluginModule<TModule>(
       moduleName,

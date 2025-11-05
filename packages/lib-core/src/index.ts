@@ -43,6 +43,7 @@ export { useFeatureFlag, UseFeatureFlagResult } from './runtime/useFeatureFlag';
 
 // Core utilities
 export { applyCodeRefSymbol } from './runtime/coderefs';
+export { isLocalPluginManifest, isStandardPluginManifest } from './runtime/plugin-manifest';
 
 // Testing utilities
 export { TestPluginStore } from './testing/TestPluginStore';
@@ -69,6 +70,8 @@ export {
   PluginRegistrationMethod,
   PluginRuntimeMetadata,
   PluginManifest,
+  LocalPluginManifest,
+  AnyPluginManifest,
   PendingPlugin,
   LoadedPlugin,
   FailedPlugin,
